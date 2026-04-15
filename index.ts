@@ -109,7 +109,7 @@ export const codexPlugin =
       return thread;
     };
 
-    builder.on("agent:input" as any, async function* (event, ctx) {
+    builder.on("agent:invoke" as any, async function* (event, ctx) {
       const { content } = event.data;
       const state = ctx?.state || {};
 
@@ -151,7 +151,7 @@ export const codexPlugin =
   };
 
 export const plugin = {
-  name: "codex",
+  name: "Codex",
   description: "Codex integration tools for OpenBot",
   factory: (options: CodexPluginOptions) => codexPlugin(options),
 };
