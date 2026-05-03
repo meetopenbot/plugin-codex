@@ -1,10 +1,10 @@
-# @melony/plugin-codex
+# openbot-plugin-codex
 
-Minimal Codex plugin scaffold for OpenBot/Melony.
+Minimal Codex plugin scaffold for OpenBot.
 
 ## What is included
 
-- A plugin registry export (`plugin`) compatible with Melony
+- A plugin registry export (`plugin`) compatible with OpenBot
 - One tool definition: `codex_run`
 - One action handler: `action:codex_run`
 - `@openai/codex-sdk` integration via `Codex` + `thread.run(...)`
