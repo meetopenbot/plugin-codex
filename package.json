@@ -1,10 +1,18 @@
 {
   "name": "openbot-plugin-codex",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Codex tools plugin for OpenBot",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:ai --external:zod --external:melony --external:@melony/ui-kit"
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:ai --external:zod --external:melony --external:@melony/ui-kit",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@melony/ui-kit": "^0.1.30",
