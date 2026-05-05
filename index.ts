@@ -151,7 +151,9 @@ export const codexPlugin =
   };
 
 export const plugin = {
+  id: "codex",
   name: "Codex",
   description: "Codex integration tools for OpenBot",
+  kind: 'runtime' as const,
   factory: (options: CodexPluginOptions) => codexPlugin(options),
 };
