@@ -1,4 +1,3 @@
-import { execSync } from "child_process";
 import { MelonyPlugin } from "melony";
 import {
   Codex,
@@ -30,28 +29,8 @@ export const codexPlugin =
     (builder) => {
       const env = (globalThis as any)?.process?.env || {};
 
-      const resolveCodexPath = (): string | undefined => {
-        const explicit = options.codexPathOverride ?? env.CODEX_PATH ?? env.CODEX_CLI_PATH;
-        if (explicit) return explicit;
-
-        // Try local node_modules first
-        const localPath = "./node_modules/.bin/codex";
-        try {
-          execSync(`${localPath} --version`, { stdio: "ignore" });
-          return localPath;
-        } catch {
-          // Fallback to system PATH
-          try {
-            const cmd = (globalThis as any)?.process?.platform === "win32" ? "where codex" : "which codex";
-            return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n")[0].trim();
-          } catch {
-            return undefined;
-          }
-        }
-      };
-
       const apiKey = options.apiKey ?? env.CODEX_API_KEY ?? env.OPENAI_API_KEY;
-      const codexPath = resolveCodexPath();
+      const codexPathOverride = options.codexPathOverride ?? env.CODEX_PATH ?? env.CODEX_CLI_PATH;
       const model = options.model?.split("/").pop() || "gpt-5-codex";
 
       /** Lazily constructed to avoid throwing during registration if CLI is missing. */
@@ -60,7 +39,7 @@ export const codexPlugin =
         if (!client) {
           client = new Codex({
             apiKey,
-            ...(codexPath && { codexPathOverride: codexPath }),
+            ...(codexPathOverride && { codexPathOverride }),
             ...(options.baseURL && { baseUrl: options.baseURL }),
           });
         }
