@@ -1,8 +1,8 @@
-import { Event, MelonyPlugin } from "melony";
+import { execSync } from "child_process";
+import { MelonyPlugin } from "melony";
 import {
   Codex,
   type ApprovalMode,
-  type CodexOptions,
   type SandboxMode,
   type Thread,
   type ThreadOptions,
@@ -10,32 +10,14 @@ import {
 } from "@openai/codex-sdk";
 
 export interface CodexPluginOptions {
-  // this first options are passed from AGENT.md as its used as a Runtime plugin for the Agent.
   name?: string;
   instructions?: string;
-  /**
-   * Mode of the plugin.
-   */
-  mode?: "coding" | "asking" | "planning"; // we can implement it later
-  /**
-   * Optional API key override.
-   */
+  mode?: "coding" | "asking" | "planning";
   apiKey?: string;
-  /**
-   * Optional base URL override for Codex API.
-   */
   baseURL?: string;
-  /**
-   * Codex model to use for threads.
-   */
+  codexPathOverride?: string;
   model: string;
-  /**
-   * Working directory for Codex execution.
-   */
   workingDirectory?: string;
-  /**
-   * Skip Codex git repository check. Defaults to false.
-   */
   skipGitRepoCheck?: boolean;
   sandboxMode?: SandboxMode;
   approvalPolicy?: ApprovalMode;
@@ -44,116 +26,97 @@ export interface CodexPluginOptions {
 }
 
 export const codexPlugin =
-  (
-    options: CodexPluginOptions = { model: "gpt-5-codex" },
-  ): MelonyPlugin<any, any> =>
-  (builder) => {
-    const env = (globalThis as any)?.process?.env as
-      | Record<string, string | undefined>
-      | undefined;
-    const apiKey = options.apiKey ?? env?.CODEX_API_KEY ?? env?.OPENAI_API_KEY;
-    let model =
-      typeof options.model === "string" && options.model.trim()
-        ? options.model
-        : "gpt-5-codex";
+  (options: CodexPluginOptions = { model: "gpt-5-codex" }): MelonyPlugin<any, any> =>
+    (builder) => {
+      const env = (globalThis as any)?.process?.env || {};
 
-    // if model is formatted as "openai/gpt-5-codex", then extract the model name
-    if (model.includes("/")) {
-      model = model.split("/")[1] ?? "gpt-5-codex";
-    }
+      const resolveCodexPath = (): string | undefined => {
+        const explicit = options.codexPathOverride ?? env.CODEX_PATH ?? env.CODEX_CLI_PATH;
+        if (explicit) return explicit;
 
-    const codexOptions: CodexOptions = {
-      apiKey,
-      ...(options.baseURL ? { baseUrl: options.baseURL } : {}),
-    };
-    const client = new Codex(codexOptions);
-    let thread: Thread | null = null;
-
-    const getThread = (state?: any) => {
-      if (thread) return thread;
-
-      const threadOptions: ThreadOptions = {
-        model,
-        ...(options.workingDirectory
-          ? { workingDirectory: options.workingDirectory }
-          : {
-              workingDirectory: (globalThis as any)?.process?.cwd() || "/tmp",
-            }),
-        skipGitRepoCheck: options.skipGitRepoCheck ?? false,
-        ...(options.sandboxMode
-          ? { sandboxMode: options.sandboxMode }
-          : {
-              sandboxMode: "workspace-write",
-            }),
-        ...(options.approvalPolicy
-          ? { approvalPolicy: options.approvalPolicy }
-          : {}),
-        ...(typeof options.networkAccessEnabled === "boolean"
-          ? { networkAccessEnabled: options.networkAccessEnabled }
-          : {}),
-        ...(options.webSearchMode
-          ? { webSearchMode: options.webSearchMode }
-          : {}),
+        // Try local node_modules first
+        const localPath = "./node_modules/.bin/codex";
+        try {
+          execSync(`${localPath} --version`, { stdio: "ignore" });
+          return localPath;
+        } catch {
+          // Fallback to system PATH
+          try {
+            const cmd = (globalThis as any)?.process?.platform === "win32" ? "where codex" : "which codex";
+            return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n")[0].trim();
+          } catch {
+            return undefined;
+          }
+        }
       };
 
-      const threadId = state?.threadId ?? undefined;
+      const apiKey = options.apiKey ?? env.CODEX_API_KEY ?? env.OPENAI_API_KEY;
+      const codexPath = resolveCodexPath();
+      const model = options.model?.split("/").pop() || "gpt-5-codex";
 
-      thread = threadId
-        ? client.resumeThread(threadId, threadOptions)
-        : client.startThread(threadOptions);
+      /** Lazily constructed to avoid throwing during registration if CLI is missing. */
+      let client: Codex | undefined;
+      const getClient = () => {
+        if (!client) {
+          client = new Codex({
+            apiKey,
+            ...(codexPath && { codexPathOverride: codexPath }),
+            ...(options.baseURL && { baseUrl: options.baseURL }),
+          });
+        }
+        return client;
+      };
 
-      if (!threadId) {
-        if (state) (state as any).threadId = thread.id;
-      }
+      let thread: Thread | null = null;
+      const getThread = (state?: any) => {
+        if (thread) return thread;
 
-      return thread;
+        const workingDirectory = options.workingDirectory || state?.channelDetails?.cwd || (globalThis as any)?.process?.cwd() || "/tmp";
+
+        const threadOptions: ThreadOptions = {
+          model,
+          workingDirectory,
+          skipGitRepoCheck: options.skipGitRepoCheck ?? false,
+          sandboxMode: options.sandboxMode ?? "workspace-write",
+          ...(options.approvalPolicy && { approvalPolicy: options.approvalPolicy }),
+          ...(typeof options.networkAccessEnabled === "boolean" && { networkAccessEnabled: options.networkAccessEnabled }),
+          ...(options.webSearchMode && { webSearchMode: options.webSearchMode }),
+        };
+
+        const threadId = state?.threadId;
+        thread = threadId ? getClient().resumeThread(threadId, threadOptions) : getClient().startThread(threadOptions);
+
+        if (!threadId && state) {
+          state.threadId = thread.id;
+        }
+
+        return thread;
+      };
+
+      builder.on("agent:invoke" as any, async function* (event, ctx) {
+        const { content } = event.data;
+        if (!content) {
+          yield { type: "agent:output", data: { content: "No content provided." } };
+          return;
+        }
+
+        try {
+          const turn = await getThread(ctx?.state).run(content);
+          const result = turn.finalResponse?.trim() || "No textual response.";
+          yield { type: "agent:output", data: { content: result } };
+        } catch (error: any) {
+          yield {
+            type: "agent:output",
+            data: { content: `Error: ${error?.message || "Codex request failed."}` },
+          };
+        }
+      });
     };
-
-    builder.on("agent:invoke" as any, async function* (event, ctx) {
-      const { content } = event.data;
-      const state = ctx?.state || {};
-
-      // if content is empty, then return an error
-      if (!content) {
-        yield {
-          type: "agent:output",
-          data: {
-            content: "No content provided.",
-          },
-        } as Event;
-
-        return;
-      }
-
-      try {
-        const turn = await getThread(state).run(content);
-        const text = turn.finalResponse?.trim();
-        const result = text && text.length > 0 ? text : "No textual response.";
-
-        yield {
-          type: "agent:output",
-          data: {
-            content: result,
-          },
-        } as Event;
-      } catch (error: any) {
-        const message =
-          error?.message || "Codex request failed with an unknown error.";
-
-        yield {
-          type: "agent:output",
-          data: {
-            content: `Error: ${message}`,
-          },
-        } as Event;
-      }
-    });
-  };
 
 export const plugin = {
   id: "codex",
   name: "Codex",
   description: "Codex integration tools for OpenBot",
-  kind: 'runtime' as const,
+  kind: "runtime" as const,
   factory: (options: CodexPluginOptions) => codexPlugin(options),
 };

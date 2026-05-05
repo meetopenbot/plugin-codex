@@ -1,6 +1,6 @@
 {
   "name": "openbot-plugin-codex",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "description": "Codex tools plugin for OpenBot",
   "main": "./dist/index.js",
@@ -16,11 +16,12 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@melony/ui-kit": "^0.1.30",
+    "@openai/codex": "^0.125.0",
     "@openai/codex-sdk": "^0.111.0",
     "melony": "^0.2.9"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "esbuild": "^0.21.0",
     "zod": "^3.23.8"
   }
