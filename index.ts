@@ -82,9 +82,6 @@ export const codexPlugin =
         try {
           const turn = await getThread(ctx?.state).runStreamed(content);
           for await (const chunk of turn.events) {
-
-            console.log(chunk);
-
             if (chunk.type === 'item.completed') {
               if (chunk.item.type === "agent_message") {
                 yield { type: "agent:output", data: { content: chunk.item.text } };
