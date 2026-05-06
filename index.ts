@@ -80,9 +80,35 @@ export const codexPlugin =
         }
 
         try {
-          const turn = await getThread(ctx?.state).run(content);
-          const result = turn.finalResponse?.trim() || "No textual response.";
-          yield { type: "agent:output", data: { content: result } };
+          const turn = await getThread(ctx?.state).runStreamed(content);
+          for await (const chunk of turn.events) {
+
+            console.log(chunk);
+
+            if (chunk.type === 'item.completed') {
+              if (chunk.item.type === "agent_message") {
+                yield { type: "agent:output", data: { content: chunk.item.text } };
+              }
+              if (chunk.item.type === "reasoning") {
+                yield { type: "agent:output", data: { content: chunk.item.text } };
+              }
+              if (chunk.item.type === "command_execution") {
+                yield { type: "agent:output", data: { content: chunk.item.command } };
+              }
+              if (chunk.item.type === "file_change") {
+                yield { type: "agent:output", data: { content: chunk.item.changes.map((change: any) => `${change.path}: ${change.action}`).join("\n") } };
+              }
+              if (chunk.item.type === "error") {
+                yield { type: "agent:output", data: { content: `Error: ${chunk.item.message}` } };
+              }
+              if (chunk.item.type === "todo_list") {
+                yield { type: "agent:output", data: { content: chunk.item.items.map((item: any) => `- ${item.text} (${item.completed ? "completed" : "pending"})`).join("\n") } };
+              }
+              if (chunk.item.type === "web_search") {
+                yield { type: "agent:output", data: { content: `Query: ${chunk.item.query}` } };
+              }
+            }
+          }
         } catch (error: any) {
           yield {
             type: "agent:output",
