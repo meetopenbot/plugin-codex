@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Codex tools plugin for OpenBot",
   "main": "./dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./dist/index.js"
   },
