@@ -1,4 +1,8 @@
-import { MelonyPlugin } from "melony";
+import {
+  definePlugin,
+  shouldHandleInvoke,
+  agentOutput,
+} from "@meetopenbot/plugin-sdk";
 import {
   Codex,
   type ApprovalMode,
@@ -8,117 +12,155 @@ import {
   type WebSearchMode,
 } from "@openai/codex-sdk";
 
-export interface CodexPluginOptions {
-  name?: string;
-  instructions?: string;
-  mode?: "coding" | "asking" | "planning";
-  apiKey?: string;
-  baseURL?: string;
-  codexPathOverride?: string;
-  model: string;
-  workingDirectory?: string;
-  skipGitRepoCheck?: boolean;
-  sandboxMode?: SandboxMode;
-  approvalPolicy?: ApprovalMode;
-  networkAccessEnabled?: boolean;
-  webSearchMode?: WebSearchMode;
-}
+export default definePlugin({
+  id: "codex",
+  name: "Codex",
+  description: "Codex integration tools for OpenBot",
+  configSchema: {
+    type: "object",
+    properties: {
+      apiKey: { type: "string", description: "Codex API Key", format: "password" },
+      baseURL: { type: "string", description: "Custom OpenAI-compatible endpoint" },
+      codexPathOverride: { type: "string", description: "Path to codex CLI" },
+      model: { type: "string", description: "Model to use", default: "gpt-5-codex" },
+      workingDirectory: { type: "string", description: "Working directory for Codex" },
+      skipGitRepoCheck: { type: "boolean", description: "Skip git repo check", default: true },
+      sandboxMode: {
+        type: "string",
+        enum: ["workspace-read", "workspace-write", "full-read", "full-write"],
+        description: "Sandbox mode",
+        default: "workspace-write",
+      },
+      approvalPolicy: {
+        type: "string",
+        enum: ["always", "never", "automatic"],
+        description: "Approval policy",
+        default: "never",
+      },
+      networkAccessEnabled: { type: "boolean", description: "Enable network access" },
+      webSearchMode: {
+        type: "string",
+        enum: ["always", "never", "automatic"],
+        description: "Web search mode",
+      },
+    },
+  },
+  factory: (context) => {
+    const config = context.config as any;
+    const env = (globalThis as any)?.process?.env || {};
 
-export const codexPlugin =
-  (options: CodexPluginOptions = { model: "gpt-5-codex" }): MelonyPlugin<any, any> =>
-    (builder) => {
-      const env = (globalThis as any)?.process?.env || {};
+    const apiKey = config.apiKey ?? env.CODEX_API_KEY ?? env.OPENAI_API_KEY;
+    const codexPathOverride = config.codexPathOverride ?? env.CODEX_PATH ?? env.CODEX_CLI_PATH;
+    const model = config.model?.split("/").pop() || "gpt-5-codex";
 
-      const apiKey = options.apiKey ?? env.CODEX_API_KEY ?? env.OPENAI_API_KEY;
-      const codexPathOverride = options.codexPathOverride ?? env.CODEX_PATH ?? env.CODEX_CLI_PATH;
-      const model = options.model?.split("/").pop() || "gpt-5-codex";
+    /** Lazily constructed to avoid throwing during registration if CLI is missing. */
+    let client: Codex | undefined;
+    const getClient = () => {
+      if (!client) {
+        client = new Codex({
+          apiKey,
+          ...(codexPathOverride && { codexPathOverride }),
+          ...(config.baseURL && { baseUrl: config.baseURL }),
+        });
+      }
+      return client;
+    };
 
-      /** Lazily constructed to avoid throwing during registration if CLI is missing. */
-      let client: Codex | undefined;
-      const getClient = () => {
-        if (!client) {
-          client = new Codex({
-            apiKey,
-            ...(codexPathOverride && { codexPathOverride }),
-            ...(options.baseURL && { baseUrl: options.baseURL }),
-          });
-        }
-        return client;
+    let thread: Thread | null = null;
+    const getThread = (state?: any, meta?: any) => {
+      if (thread) return thread;
+
+      const workingDirectory =
+        config.workingDirectory ||
+        state?.channelDetails?.cwd ||
+        (globalThis as any)?.process?.cwd() ||
+        "/tmp";
+
+      const threadOptions: ThreadOptions = {
+        model,
+        workingDirectory,
+        skipGitRepoCheck: config.skipGitRepoCheck ?? true,
+        sandboxMode: (config.sandboxMode as SandboxMode) ?? "workspace-write",
+        approvalPolicy: (config.approvalPolicy as ApprovalMode) ?? "never",
+        ...(typeof config.networkAccessEnabled === "boolean" && {
+          networkAccessEnabled: config.networkAccessEnabled,
+        }),
+        ...(config.webSearchMode && {
+          webSearchMode: config.webSearchMode as WebSearchMode,
+        }),
       };
 
-      let thread: Thread | null = null;
-      const getThread = (state?: any) => {
-        if (thread) return thread;
+      const threadId = state?.threadId || meta?.threadId;
+      thread = threadId
+        ? getClient().resumeThread(threadId, threadOptions)
+        : getClient().startThread(threadOptions);
 
-        const workingDirectory = options.workingDirectory || state?.channelDetails?.cwd || (globalThis as any)?.process?.cwd() || "/tmp";
+      if (!threadId && state) {
+        state.threadId = thread.id;
+      }
 
-        const threadOptions: ThreadOptions = {
-          model,
-          workingDirectory,
-          skipGitRepoCheck: options.skipGitRepoCheck ?? false,
-          sandboxMode: options.sandboxMode ?? "workspace-write",
-          ...(options.approvalPolicy && { approvalPolicy: options.approvalPolicy }),
-          ...(typeof options.networkAccessEnabled === "boolean" && { networkAccessEnabled: options.networkAccessEnabled }),
-          ...(options.webSearchMode && { webSearchMode: options.webSearchMode }),
-        };
+      return thread;
+    };
 
-        const threadId = state?.threadId;
-        thread = threadId ? getClient().resumeThread(threadId, threadOptions) : getClient().startThread(threadOptions);
+    return (builder) => {
+      builder.on("agent:invoke", async function* (event, ctx) {
+        if (!shouldHandleInvoke(event, context.agentId)) return;
 
-        if (!threadId && state) {
-          state.threadId = thread.id;
-        }
-
-        return thread;
-      };
-
-      builder.on("agent:invoke" as any, async function* (event, ctx) {
-        const { content } = event.data;
+        const { content } = event.data || {};
         if (!content) {
-          yield { type: "agent:output", data: { content: "No content provided." } };
+          yield agentOutput({
+            agentId: context.agentId,
+            content: "No content provided.",
+            threadId: event.meta?.threadId,
+          });
           return;
         }
 
         try {
-          const turn = await getThread(ctx?.state).runStreamed(content);
+          const turn = await getThread(ctx?.state, event.meta).runStreamed(content);
           for await (const chunk of turn.events) {
-            if (chunk.type === 'item.completed') {
+            if (chunk.type === "item.completed") {
+              let outputContent = "";
               if (chunk.item.type === "agent_message") {
-                yield { type: "agent:output", data: { content: chunk.item.text } };
+                outputContent = chunk.item.text;
+              } else if (chunk.item.type === "reasoning") {
+                outputContent = chunk.item.text;
+              } else if (chunk.item.type === "command_execution") {
+                outputContent = `Executing: ${chunk.item.command}`;
+              } else if (chunk.item.type === "file_change") {
+                outputContent = chunk.item.changes
+                  .map((change: any) => `${change.path}: ${change.action}`)
+                  .join("\n");
+              } else if (chunk.item.type === "error") {
+                outputContent = `Error: ${chunk.item.message}`;
+              } else if (chunk.item.type === "todo_list") {
+                outputContent = chunk.item.items
+                  .map(
+                    (item: any) =>
+                      `- ${item.text} (${item.completed ? "completed" : "pending"})`
+                  )
+                  .join("\n");
+              } else if (chunk.item.type === "web_search") {
+                outputContent = `Searching: ${chunk.item.query}`;
               }
-              if (chunk.item.type === "reasoning") {
-                yield { type: "agent:output", data: { content: chunk.item.text } };
-              }
-              if (chunk.item.type === "command_execution") {
-                yield { type: "agent:output", data: { content: chunk.item.command } };
-              }
-              if (chunk.item.type === "file_change") {
-                yield { type: "agent:output", data: { content: chunk.item.changes.map((change: any) => `${change.path}: ${change.action}`).join("\n") } };
-              }
-              if (chunk.item.type === "error") {
-                yield { type: "agent:output", data: { content: `Error: ${chunk.item.message}` } };
-              }
-              if (chunk.item.type === "todo_list") {
-                yield { type: "agent:output", data: { content: chunk.item.items.map((item: any) => `- ${item.text} (${item.completed ? "completed" : "pending"})`).join("\n") } };
-              }
-              if (chunk.item.type === "web_search") {
-                yield { type: "agent:output", data: { content: `Query: ${chunk.item.query}` } };
+
+              if (outputContent) {
+                yield agentOutput({
+                  agentId: context.agentId,
+                  content: outputContent,
+                  threadId: event.meta?.threadId,
+                });
               }
             }
           }
         } catch (error: any) {
-          yield {
-            type: "agent:output",
-            data: { content: `Error: ${error?.message || "Codex request failed."}` },
-          };
+          yield agentOutput({
+            agentId: context.agentId,
+            content: `Error: ${error?.message || "Codex request failed."}`,
+            threadId: event.meta?.threadId,
+          });
         }
       });
     };
-
-export const plugin = {
-  id: "codex",
-  name: "Codex",
-  description: "Codex integration tools for OpenBot",
-  kind: "runtime" as const,
-  factory: (options: CodexPluginOptions) => codexPlugin(options),
-};
+  },
+});
