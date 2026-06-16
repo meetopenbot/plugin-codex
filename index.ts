@@ -2,6 +2,7 @@ import {
   definePlugin,
   shouldHandleInvoke,
   agentOutput,
+  uiWidget,
 } from "@meetopenbot/plugin-sdk";
 import {
   Codex,
@@ -120,35 +121,80 @@ export default definePlugin({
           const turn = await getThread(ctx?.state, event.meta).runStreamed(content);
           for await (const chunk of turn.events) {
             if (chunk.type === "item.completed") {
-              let outputContent = "";
-              if (chunk.item.type === "agent_message") {
-                outputContent = chunk.item.text;
-              } else if (chunk.item.type === "reasoning") {
-                outputContent = chunk.item.text;
-              } else if (chunk.item.type === "command_execution") {
-                outputContent = `Executing: ${chunk.item.command}`;
-              } else if (chunk.item.type === "file_change") {
-                outputContent = chunk.item.changes
-                  .map((change: any) => `${change.path}: ${change.action}`)
-                  .join("\n");
-              } else if (chunk.item.type === "error") {
-                outputContent = `Error: ${chunk.item.message}`;
-              } else if (chunk.item.type === "todo_list") {
-                outputContent = chunk.item.items
-                  .map(
-                    (item: any) =>
-                      `- ${item.text} (${item.completed ? "completed" : "pending"})`
-                  )
-                  .join("\n");
-              } else if (chunk.item.type === "web_search") {
-                outputContent = `Searching: ${chunk.item.query}`;
-              }
+              const { item } = chunk as any;
 
-              if (outputContent) {
+              if (item.type === "agent_message") {
                 yield agentOutput({
                   agentId: context.agentId,
-                  content: outputContent,
+                  content: item.text,
                   threadId: event.meta?.threadId,
+                });
+                continue;
+              }
+
+              let title = "";
+              let body = "";
+
+              switch (item.type) {
+                case "reasoning":
+                  title = "Reasoning";
+                  body = item.text;
+                  break;
+                case "command_execution":
+                  title = "Command Execution";
+                  body = `Executing: ${item.command}`;
+                  break;
+                case "file_change":
+                  title = "File Change";
+                  body = item.changes
+                    .map((change: any) => `${change.path}: ${change.kind || change.action}`)
+                    .join("\n");
+                  break;
+                case "mcp_tool_call":
+                  title = `Tool: ${item.tool}`;
+                  body = `Arguments: ${JSON.stringify(item.arguments, null, 2)}`;
+                  if (item.result) {
+                    body += `\n\nResult: ${JSON.stringify(
+                      item.result.structured_content || item.result.content,
+                      null,
+                      2
+                    )}`;
+                  }
+                  if (item.error) {
+                    body += `\n\nError: ${item.error.message}`;
+                  }
+                  break;
+                case "web_search":
+                  title = "Web Search";
+                  body = `Searching: ${item.query}`;
+                  break;
+                case "todo_list":
+                  title = "Todo List";
+                  body = item.items
+                    .map(
+                      (todo: any) =>
+                        `- ${todo.text} (${todo.completed ? "completed" : "pending"})`
+                    )
+                    .join("\n");
+                  break;
+                case "error":
+                  title = "Error";
+                  body = item.message;
+                  break;
+              }
+
+              if (title && body) {
+                yield uiWidget({
+                  agentId: context.agentId,
+                  threadId: event.meta?.threadId,
+                  widget: {
+                    kind: "message",
+                    title,
+                    body,
+                    // @ts-ignore
+                    variant: "basic",
+                    display: "collapsed",
+                  },
                 });
               }
             }

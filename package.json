@@ -1,6 +1,6 @@
 {
   "name": "@meetopenbot/codex",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "type": "module",
   "description": "Codex tools plugin for OpenBot",
   "main": "./dist/index.js",
